@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 James Myint
 # phase1-automated-install-updated.sh
 # Devuan Bootstrap: Phase 1 - Destructive Operations to Bootable System
 #
@@ -290,11 +292,6 @@
 #       1. LightDM greeter (/etc/lightdm/lightdm-gtk-greeter.conf)
 #       2. XFCE defaults (/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/)
 #
-# Terminal: XFCE Terminal with Cyberpunk HUD Theme
-#   - Font: Hack Nerd Font (ligatures, powerline symbols)
-#   - Colors: Black background, white text, red cursor
-#   - Cursor: Block, no blink (because we're not animals)
-#   - UI: No scrollbar, no menubar, no toolbar (zero bloat)
 #
 # Why Not Wayland?
 #   - Nvidia proprietary drivers (X11 is more stable)
@@ -454,6 +451,15 @@
 #   - PXE boot support (network-based bootstrap)
 #   - Preseed config file (fully automated install)
 #   - Remote deployment (install on headless servers)
+#
+# TODO: Terminal Styling
+#	- Create a stylish custom terminal profile
+#	- Provide guidance on how to make your own
+#
+# TODO: Pre-conigure tmux
+#	- I spent weirdly long amount of time in tty
+#	- I would like to build some custom tmux arrangements
+#	- It also serves as way to show people how to build their own
 #
 # ═══════════════════════════════════════════════════════════════════════════
 # BEGIN SCRIPT EXECUTION
@@ -938,7 +944,7 @@ check_dependencies() {
         "shuf:coreutils"              # Random number generation (hostname)
         "partprobe:parted"            # Notify kernel of partition changes
         "arch-chroot:arch-install-scripts"  # Chroot helper
-        "wget:wget"                   # Download Hack font
+        "wget:wget"                   # Download nerd fonts
     )
     
     # Optional dependencies: Script works without these, but less securely
@@ -1514,6 +1520,15 @@ create_sata_partitions() {
 #   - /dev/disk/by-partlabel/ESP: Symlink to actual device
 #   - More reliable than /dev/nvme0n1p1 (device names can change)
 #   - Works even if drive letter shifts (hot-swap scenarios)
+#
+# Why label the drives multiple times?
+#   - To ensure every layer has a meaningful name
+#   - This is the filesystem label, not the partition label
+#   - Even though we reuse the same strings, they live in different contexts
+#   - Consistent naming across contexts gives you options without extra complexity:
+#       - You might prefer /dev/disk/by-partlabel/* (GPT partition names)
+#       - Someone else might prefer /dev/disk/by-label/* (filesystem labels)
+#       - /dev/mapper/cryptroot remains the canonical name in fstab/crypttab
 format_boot_partitions() {
     log_info "Formatting boot partitions..."
     
@@ -1803,6 +1818,13 @@ create_btrfs_subvolumes() {
 #   - Fragmentation kills performance (random I/O patterns)
 #   - VMs/databases already have internal consistency
 #   - Snapshots still work (but lose some benefits)
+#
+# On the idempotency of mkdir -p
+#	- There is no term more misused in programming than Idempotent
+#	- A state check can fail and rerun the code
+#	- If reruning the code, changes a correct state then it is not idempotent
+#	- f(f(x)) = f(x); for mkdir -p, the second call doesn't change the result
+#	- mkdir -p creates the path and if it already exists, it still exists unchanged
 #==============================================================================
 
 mount_for_bootstrap() {
@@ -1927,6 +1949,20 @@ mount_for_bootstrap() {
 #   - zsh: Needed as login shell (user account requires it)
 #   - locales: Required for locale generation (chroot step)
 #   - zstd: Needed for BTRFS compression verification
+#	- btrfs-progs: needed for working with our base FS
+#
+# Why not include more extra packages?
+#	- Debootstrap does not use apt's dependency resolver
+#	- It uses it's own much simpler logic
+#	- As a bootstrapping tool and not a package management tool, it is bad at this
+#	- Unless you want to debug random bootstrap failures, keep it simple
+#
+# Why those components?
+#	- main is enabled by default, but just to be clear
+#	- contrib includes items with complicated licensing issues that are compatible with open source licenses
+#	- non-free is where some needed software for this installer lives
+#	- non-free-firmware is because in some cases, Nvidia for example, the open source alternative isn't as performant
+#	
 #
 # Bootstrap Size:
 #   - Minimal: ~300MB (Essential + Required packages)
@@ -2314,12 +2350,42 @@ EOF
     
     log_success "policy-rc.d installed (Kali-style)"
 }
-# Configure apt sources is designed to detect the version we're installing.
-# I'm not sure if Kali would accept the new style .sources file but that might be something 
-# worth looking into at later date, if I ever return to it's origins as a Kali Bootstrap script
-# after I figure out how to rip out systemd completely and replace it with s6 or openrc or 
-# literally anything else
-
+# configure_apt_sources: Generate APT repository configuration
+#
+# DEB822 Format:
+#   - Modern APT source format (replaces old sources.list)
+#   - Structured key-value pairs (more maintainable)
+#   - GPG keyring specification (explicit trust)
+#   - Multiple suites in one stanza (cleaner)
+#
+# Suite Detection:
+#   - Stable releases: Have -updates and -security repos
+#   - Testing/Unstable: Single suite only
+#
+# Stable Releases (excalibur, daedalus, chimaera, beowulf, ascii, jessie):
+#   - Main suite: Base packages
+#   - -updates: Bug fixes, minor updates
+#   - -security: Security patches
+#
+# Testing/Unstable (freia, ceres):
+#   - Main suite only (rolling, no separate security)
+#
+# Components:
+#   - main: Free software (DFSG-compliant)
+#   - contrib: Free software with non-free dependencies
+#   - non-free: Proprietary software
+#   - non-free-firmware: Firmware blobs (WiFi, GPU drivers)
+#
+# Why DEB822?
+#   - Easier to parse (structured format)
+#   - Clearer architecture specification
+#   - Built-in keyring support (no manual key import)
+#   - Future-proof (Debian moving to this format)
+#
+# Backward Compatibility:
+#   - Old sources.list replaced with redirect comment
+#   - Prevents duplicate source entries
+#   - Keeps system working if user has old scripts
 configure_apt_sources() {
     log_info "Configuring APT sources (DEB822 format)..."
     
@@ -2403,10 +2469,12 @@ EOF
             ;;
     esac
     
+    # Backup old sources.list if it exists
     if [[ -f "$CHROOT_TARGET/etc/apt/sources.list" ]]; then
         mv "$CHROOT_TARGET/etc/apt/sources.list" "$CHROOT_TARGET/etc/apt/sources.list.backup"
     fi
     
+    # Create redirect comment in old location
     cat > "$CHROOT_TARGET/etc/apt/sources.list" <<'EOF'
 # Repository configuration has moved to /etc/apt/sources.list.d/devuan.sources
 EOF
@@ -2414,6 +2482,33 @@ EOF
     log_success "APT sources configured"
 }
 
+# configure_basic_system: Set hostname, hosts file, locale, timezone
+#
+# Hostname:
+#   - Single name (no domain)
+#   - Used for network identification
+#   - Appears in shell prompt
+#
+# Hosts File:
+#   - 127.0.0.1: IPv4 localhost
+#   - 127.0.1.1: Hostname mapping (Debian convention)
+#   - ::1: IPv6 localhost
+#
+# Why 127.0.1.1?
+#   - Debian-specific convention
+#   - Prevents hostname resolution delays
+#   - Used when hostname != localhost
+#   - Required for some network services
+#
+# Locale:
+#   - Appends to locale.gen (allows multiple locales)
+#   - Will be generated in chroot (locale-gen command)
+#   - UTF-8 encoding (modern standard)
+#
+# Timezone:
+#   - Symlink to zoneinfo database
+#   - Will be applied in chroot (dpkg-reconfigure)
+#   - Local time for system clock
 configure_basic_system() {
     log_info "Configuring basic system settings..."
     
@@ -2436,15 +2531,58 @@ EOF
     log_success "Basic system settings configured"
 }
 
+# configure_target_system: XDG Base Directory enforcement (God Mode)
+#
+# The Problem:
+#   - Unix traditionally pollutes $HOME with dotfiles
+#   - ~/.config, ~/.cache, ~/.local are hidden
+#   - Inconsistent application behavior
+#   - Difficult to backup (what's important?)
+#
+# Our Solution:
+#   - Visible, capitalized directories: Config/, Data/, State/, Cache/
+#   - System-wide environment variables (/etc/profile.d/)
+#   - Pre-created skeleton directories (/etc/skel/)
+#   - Zsh forced to custom location (ZDOTDIR)
+#
+# The "God Mode" Fix:
+#   - We don't ask applications to respect XDG
+#   - We FORCE them via environment variables
+#   - Set at login (all shells see them)
+#   - Works even for non-XDG-aware apps (if you alias them)
+#
+# Why profile.d?
+#   - Sourced by all POSIX shells (bash, zsh, sh)
+#   - Runs at login (before user shell config)
+#   - System-wide (affects all users)
+#   - Numbered (00-) to run first
+#
+# Why This Works:
+#   - Environment variables are inherited
+#   - Child processes see parent's environment
+#   - Applications check XDG_* before falling back
+#   - We create directories in skeleton (new users get them)
+#
+# Note:
+#   - GUI and Nvidia configuration moved to chroot
+#   - Must run AFTER packages are installed
+#   - Otherwise we'd configure non-existent files
 configure_target_system() {
     echo "Applying aggressive system configuration to $CHROOT_TARGET..."
-# We call this the god mode fix, because we had to godlike write to these directories because the 
-# XDG 
-# ==========================================
-# 1. GLOBAL ENV VARS (The "God Mode" Fix)
-# Purpose: Force LightDM, Zsh, and XFCE to use visible Home folders.
-# ==========================================
-cat <<EOF > "$CHROOT_TARGET/etc/profile.d/00-xdg-custom.sh"
+    
+    # ──────────────────────────────────────────────────────────────────────
+    # GLOBAL ENV VARS (The "God Mode" Fix)
+    # ──────────────────────────────────────────────────────────────────────
+    # Purpose: Force LightDM, Zsh, and XFCE to use visible Home folders
+    #
+    # This file is sourced by:
+    #   - /etc/profile (POSIX login shells)
+    #   - /etc/zsh/zprofile (zsh login shells)
+    #   - /etc/bash.bashrc (bash interactive shells)
+    #
+    # Result: XDG variables set BEFORE user config runs
+    
+    cat <<EOF > "$CHROOT_TARGET/etc/profile.d/00-xdg-custom.sh"
 #!/bin/sh
 # Visible Folders in Home (No Dots)
 export XDG_CONFIG_HOME="\$HOME/Config"
@@ -2457,19 +2595,60 @@ export ZDOTDIR="\$XDG_CONFIG_HOME/zsh"
 EOF
     chmod +x "$CHROOT_TARGET/etc/profile.d/00-xdg-custom.sh"
 
-    # Create the skeleton directories so they exist for the new user
+    # ──────────────────────────────────────────────────────────────────────
+    # SKELETON DIRECTORIES
+    # ──────────────────────────────────────────────────────────────────────
+    # Create the skeleton directories so they exist for new users
+    # useradd -m copies /etc/skel/ to new user's $HOME
+    # This ensures our XDG structure is there from birth
+    
     mkdir -p "$CHROOT_TARGET/etc/skel/Config"
     mkdir -p "$CHROOT_TARGET/etc/skel/Cache"
     mkdir -p "$CHROOT_TARGET/etc/skel/Data"
     mkdir -p "$CHROOT_TARGET/etc/skel/State"
     
     # Note: GUI and Nvidia hacks have been moved to finalize-install.sh
-    # to ensure they run AFTER packages are installed.
+    # to ensure they run AFTER packages are installed
 }
 
-# No safety checking.  If these directories aren't set correctly before now, they will fucking be
+# configure_bash_xdg: Force bash to respect XDG Base Directory spec
+#
+# Why This Exists:
+#   - Bash ignores XDG by default (legacy behavior)
+#   - History goes to ~/.bash_history (pollutes $HOME)
+#   - We redirect to $XDG_STATE_HOME/bash/history
+#
+# System-wide bash.bashrc:
+#   - Sourced by ALL interactive bash shells
+#   - Runs BEFORE user's ~/.bashrc
+#   - Sets environment for entire system
+#
+# XDG Variables:
+#   - XDG_CONFIG_HOME: Configuration files
+#   - XDG_DATA_HOME: Application data
+#   - XDG_STATE_HOME: Logs, history, recently-used
+#   - XDG_CACHE_HOME: Temporary cache files
+#   - XDG_RUNTIME_DIR: Runtime files (sockets, PIDs)
+#
+# HISTFILE:
+#   - Default: ~/.bash_history
+#   - XDG: $XDG_STATE_HOME/bash/history
+#   - We create parent directory (mkdir -p)
+#   - Errors suppressed (2>/dev/null) - may already exist
+#
+# PATH Addition:
+#   - $HOME/bin added if it exists
+#   - User's personal scripts/binaries
+#   - Checked with [[ -d ]] (directory exists test)
+#
+# Why No Quotes in Export?
+#   - POSIX shell syntax (not zsh)
+#   - Quotes required for values with spaces
+#   - Our paths have no spaces (safe to omit)
+#   - Standard practice in shell scripts
 configure_bash_xdg() {
     log_info "Configuring bash for XDG compliance..."
+    
     # System-wide bash environment (sourced by all bash shells)
     cat >> "$CHROOT_TARGET/etc/bash.bashrc" <<'EOF'
 # XDG Base Directory Specification
@@ -2484,14 +2663,67 @@ mkdir -p "$(dirname "$HISTFILE")" 2>/dev/null
 EOF
 }
 
-
 #==============================================================================
 # ZSH CONFIGURATION
 #==============================================================================
-# Yes, There are no quotes in any of those export statements
-# No it's not POSIX but it is zsh and if you want to fight about I will 
-# and here is the page you can find my justification 
-# https://zsh.sourceforge.io/Guide/zshguide05.html#l114
+#
+# Philosophy:
+#   - System-wide configuration (/etc/zsh/zshenv)
+#   - Sourced by ALL zsh instances (even scripts)
+#   - Sets XDG paths BEFORE user config runs
+#
+# Why zshenv Instead of zprofile?
+#   - zshenv: Sourced for ALL zsh invocations
+#   - zprofile: Only login shells
+#   - zshrc: Only interactive shells
+#   - We need XDG everywhere (hence zshenv)
+#
+# The No-Quotes Controversy:
+#   - Yes, there are no quotes in those export statements
+#   - No, it's not POSIX but it IS zsh
+#   - Zsh parameter expansion doesn't require quotes for simple cases
+#   - See: https://zsh.sourceforge.io/Guide/zshguide05.html#l114
+#   - Fight me if you want, but bring documentation
+#
+# Variable Expansion:
+#	- Recieved bad advice
+#	- If unset or set incorrectly, explicitly set correctly
+#   - Otherwise, set to $HOME/Config
+#
+# ZDOTDIR:
+#   - Tells zsh where to find .zshrc
+#   - Default: $HOME/.zshrc
+#   - XDG: $XDG_CONFIG_HOME/zsh/.zshrc
+#   - Critical for our modular zsh setup
+
+# configure_zshenv: Install system-wide zsh environment configuration
+#
+# File Location: /etc/zsh/zshenv
+#   - Sourced by ALL zsh instances
+#   - Even non-interactive shells (scripts)
+#   - Even non-login shells
+#   - Even zsh -c 'command'
+#
+# What Goes Here:
+#   - XDG Base Directory variables (critical for all apps)
+#   - PATH additions (needed by scripts)
+#   - Locale settings (LANG, LC_*)
+#
+# What Does NOT Go Here:
+#   - Aliases (not available in non-interactive shells)
+#   - Prompt configuration (only needed in interactive)
+#   - Completion setup (slow, only needed in interactive)
+#   - Anything slow (runs for EVERY zsh invocation)
+#
+# PATH Additions:
+#   - $HOME/bin: User's personal scripts
+#   - Added early (available to scripts)
+#   - Conditional ([[ -d ]]) - only if directory exists
+#
+# ZDOTDIR:
+#   - Forces zsh to look for configs in $XDG_CONFIG_HOME/zsh/
+#   - Critical for our modular setup
+#   - Without this, zsh ignores our custom structure
 configure_zshenv() {
     log_info "Installing system-wide zshenv..."
     
@@ -2531,8 +2763,7 @@ configure_zshenv() {
 # No hidden .local/share rubbish.
 
 # User-specific configuration files
-: ${XDG_CONFIG_HOME:=$HOME/Config}
-export XDG_CONFIG_HOME
+export XDG_CONFIG_HOME=$HOME/Config
 
 # User-specific data files
 export XDG_DATA_HOME=$HOME/Data
@@ -2545,7 +2776,6 @@ export XDG_CACHE_HOME=$HOME/Cache
 
 # User-specific runtime files (sockets, named pipes)
 # Usually set by the system (pam_systemd sets it to /run/user/$UID)
-# Only set if not already defined
 export XDG_RUNTIME_DIR=/tmp/runtime-$USER
 
 # --- Locale ---
@@ -2560,29 +2790,124 @@ export XDG_RUNTIME_DIR=/tmp/runtime-$USER
 # User's personal bin directory
 [[ -d "$HOME/bin" ]] && PATH=$HOME/bin:$PATH
 
-
-
 export PATH
 
 # --- ZDOTDIR ---
-# Force zsh to look for configs here.
-export ZDOTDIR=XDG_CONFIG_HOME/zsh
+# Force zsh to look for configs here
+export ZDOTDIR=$XDG_CONFIG_HOME/zsh
 EOF
     
     log_success "System-wide zshenv installed"
 }
 
 #==============================================================================
-# HACK FONT FOR HACKER VIBES
+# NERD FONT FOR STYLISH VIBES
 #==============================================================================
-# This a place holder until I can figure out the best way to add nerd fonts to the install
-# potential function names configure_hack_font, configure_nerd_font, cyberpunk_fon_for terminal
 #
+# PLACEHOLDER: Future enhancement
 #
+# Potential Function Names:
+#   - configure_hack_font
+#   - configure_nerd_font
+#   - cyberpunk_font
+#
+# Goals:
+#   - Install patched programming fonts (ligatures, glyphs)
+#   - System-wide font configuration
+#   - Terminal emulator defaults
+#
+# Considerations:
+#   - Download during bootstrap (slow, requires network)
+#   - Or: Package as .deb in repository (faster, offline-capable)
+#   - Consistent function naming (configure_* pattern)
+#
+# Location Uncertainty:
+#   - This may be moved into chroot script section
+#   - Depends on whether fonts are needed pre-GUI or post-GUI
+#   - Current plan: Post-install in finalize-install.sh
+#
+# Why Not Now?
+#   - Fonts require fontconfig to be installed
+#   - fontconfig requires X11 libraries
+#   - We install X11 in chroot, not bootstrap
+#   - Bootstrap should remain minimal (fast, reliable)
+#==============================================================================
+
 #==============================================================================
 # GRUB CONFIGURATION
 #==============================================================================
+#
+# Why Configure Now?
+#   - GRUB config must exist before grub-install runs
+#   - We set defaults here, finalize in chroot
+#   - Chroot will run grub-mkconfig to generate grub.cfg
+#
+# Configuration File: /etc/default/grub
+#   - Sourced by grub-mkconfig
+#   - Controls GRUB behavior and appearance
+#   - Plain text, shell-style variables
+#
+# GRUB_DEFAULT:
+#   - Which menu entry to boot by default
+#   - 0 = first entry (usually latest kernel)
+#   - Can also be menu entry name (less reliable)
+#
+# GRUB_TIMEOUT:
+#   - How long to show boot menu (seconds)
+#   - 5 = reasonable (time to choose, not annoying)
+#   - 0 = instant boot (no menu)
+#   - -1 = wait forever (manual selection required)
+#
+# GRUB_DISTRIBUTOR:
+#   - Shown in boot menu
+#   - Cosmetic only (doesn't affect functionality)
+#   - Useful for multi-boot systems
+#
+# GRUB_CMDLINE_LINUX_DEFAULT:
+#   - Kernel parameters for normal boot
+#   - "quiet" = suppress verbose kernel messages
+#   - Alternative: "splash" for graphical boot screen
+#   - Remove "quiet" for debugging (see all kernel output)
+#
+# GRUB_CMDLINE_LINUX:
+#   - Kernel parameters for ALL boot modes
+#   - rootflags=subvol=@: Tell kernel which BTRFS subvolume is root
+#   - rootdelay=10: Wait 10s for USB keyfile to be detected
+#
+# Why rootdelay?
+#   - USB devices are slow to initialize
+#   - Without delay, kernel might try to mount root before USB ready
+#   - 10s is generous (most USB drives ready in 2-5s)
+#   - Can reduce to 5s if your USB is fast
+#
+# GRUB_GFXMODE:
+#   - Resolution for GRUB menu
+#   - 1920x1080 = modern standard (Full HD)
+#   - Can be auto (let GRUB detect)
+#   - Or specific resolution (800x600, 1024x768, etc.)
+#
+# GRUB_GFXPAYLOAD_LINUX:
+#   - Keep GRUB resolution when booting kernel
+#   - "keep" = maintain high-res for console
+#   - Alternative: "text" for traditional 80x25 console
+#
+# GRUB_ENABLE_CRYPTODISK:
+#   - Whether GRUB can unlock LUKS volumes
+#   - n = no (our /boot is unencrypted, GRUB doesn't need this)
+#   - y = yes (required if /boot is encrypted)
+#
+# Why Our /boot is Unencrypted:
+#   - GRUB can't unlock LUKS2 (only LUKS1, with limitations)
+#   - Encrypted /boot requires complex setup (key embedded in initramfs)
+#   - Unencrypted /boot is standard (kernel + initramfs are public anyway)
+#   - Real security is in encrypted root (everything else is protected)
 
+# configure_grub: Prepare GRUB bootloader configuration
+#
+# Note: This only PREPARES the config
+# Actual GRUB installation happens in chroot:
+#   1. grub-install (writes bootloader to EFI)
+#   2. grub-mkconfig (generates grub.cfg from this template)
 configure_grub() {
     log_info "Preparing for GRUB installation (will complete in chroot)..."
     
@@ -2612,6 +2937,40 @@ EOF
 #==============================================================================
 # CHROOT SCRIPT GENERATION
 #==============================================================================
+#
+# Strategy: Two-Part HEREDOC
+#   - Part 1: Unquoted EOF (variables expand)
+#   - Part 2: Quoted 'CHROOT_EOF' (literal text)
+#
+# Why Split?
+#   - Part 1 injects HOST variables into chroot script
+#   - Part 2 preserves shell logic without expansion
+#   - Combined: We get both variable injection AND literal code
+#
+# Part 1 Variables (Expanded by Host):
+#   - WHO_IS_THIS: Username from bootstrap config
+#   - WHAT_YOU_USE: Login shell from bootstrap config
+#   - WHERE_YOU_BELONG: User groups from bootstrap config
+#   - USB_KEYFILE_PATH: Path to keyfile from bootstrap config
+#   - PARTLABEL_USB: USB partition label from bootstrap config
+#   - SKEL: Skeleton directory path from bootstrap config
+#
+# Part 2 Logic (Literal in Chroot):
+#   - All functions, loops, conditionals
+#   - Uses $1, $2 (chroot script's own variables)
+#   - Color codes, log functions
+#   - Package installation, service configuration
+#
+# Why This Works:
+#   - Host script runs on live USB (knows config)
+#   - Chroot script runs inside target system (isolated environment)
+#   - Variable injection bridges the gap
+#   - Chroot script is self-contained (could be run manually)
+#
+# Result: /root/finalize-install.sh
+#   - Executable script in chroot's /root/
+#   - Run after entering chroot (arch-chroot /mnt)
+#   - Completes installation (packages, users, bootloader)
 
 generate_chroot_script() {
     log_info "Generating chroot finalization script..."
@@ -2619,6 +2978,10 @@ generate_chroot_script() {
 # -------------------------------------------------------------------------
 # PART 1: HEADER (Unquoted)
 # This expands variables from the HOST script into the file.
+# We have to split this in two so that the variables set at the top expand correctly
+# when the script is written to the chroot's /root directory.
+# That is why the heredoc has EOF without quotes.
+# We do it so we can set the variables at the beginning and so we can reuse them in our chroot script.
 # -------------------------------------------------------------------------
     cat > "$CHROOT_TARGET/root/finalize-install.sh" <<EOF
 #!/usr/bin/zsh
@@ -2652,12 +3015,36 @@ EOF
 # -------------------------------------------------------------------------
 # PART 2: BODY (Quoted)
 # This appends the logic literally. No variables here are expanded by the host.
+# Everything below is treated as literal text (no variable expansion)
+# until we hit CHROOT_EOF.
 # -------------------------------------------------------------------------
     cat >> "$CHROOT_TARGET/root/finalize-install.sh" <<'CHROOT_EOF'
 
 #==============================================================================
 # LOCALE AND TIMEZONE
 #==============================================================================
+#
+# Why This Must Run in Chroot:
+#   - locale-gen needs access to /usr/share/i18n/
+#   - dpkg-reconfigure needs running dpkg database
+#   - Both require chroot environment
+#
+# What We're Fixing:
+#   - We set locale/timezone earlier in bootstrap
+#   - But locale-gen wasn't run (package wasn't installed yet)
+#   - Now we generate the actual locale data
+#   - And configure timezone properly
+#
+# locale-gen:
+#   - Reads /etc/locale.gen (we populated this earlier)
+#   - Generates locale data (/usr/lib/locale/)
+#   - Suppresses apt warnings about locale
+#
+# dpkg-reconfigure tzdata:
+#   - Reads /etc/localtime symlink (we created earlier)
+#   - Updates /etc/timezone file
+#   - Configures system timezone
+#   - -f noninteractive: No prompts (use existing config)
 
 log_info "Generating locales..."
 locale-gen
@@ -2668,12 +3055,72 @@ dpkg-reconfigure -f noninteractive tzdata
 #==============================================================================
 # PACKAGE MANAGEMENT
 #==============================================================================
+#
+# This section will explain why these packages made the list before each group.
+# They are grouped by theme with log_info explaining the basic themes.
+#
+# Package Installation Strategy:
+#   1. Update package lists (apt has empty cache from bootstrap)
+#   2. Upgrade base system (should already be current, but verify)
+#   3. Install packages in logical groups (easier to maintain)
+#   4. Handle Nvidia specially (known buggy postinst scripts)
+#
+# Why This Order?
+#   - Update first (get latest package info)
+#   - Upgrade base (fix any bootstrap issues)
+#   - Kernel/firmware early (needed for hardware detection)
+#   - Crypto/filesystem tools (already needed, but ensure latest)
+#   - Bootloader (critical, install before anything can break it)
+#   - Utilities (nice to have, non-critical)
+#   - Desktop last (largest, most complex, can fail gracefully)
+#
+# Note on Failures:
+#   - Most packages fail gracefully (apt continues)
+#   - Nvidia can fail (we handle with || true)
+#   - DPKG locks are handled after Nvidia section
 
+# The package cache is empty because apt hasn't run yet
 log_info "Updating package lists..."
 apt update
 
+# Upgrade what is already there. It should already be up to date
 log_info "Upgrading base system..."
-apt upgrade -y
+
+
+#==============================================================================
+# KERNEL AND FIRMWARE
+#==============================================================================
+#
+# These packages cover a broad range of firmware and drivers.
+# If you want to reduce your kernel size and know what you are doing, feel free to exclude packages.
+#
+# Package Breakdown:
+#   - linux-image-amd64: Kernel metapackage (always latest stable)
+#   - linux-headers-amd64: Kernel headers (for building modules, DKMS)
+#   - firmware-linux: Free firmware (kernel redistributable)
+#   - firmware-linux-nonfree: Proprietary firmware (necessary evil)
+#   - firmware-misc-nonfree: Additional proprietary firmware (WiFi, Bluetooth)
+#   - intel-microcode: CPU microcode updates (Intel, security patches)
+#   - amd64-microcode: CPU microcode updates (AMD, security patches)
+#   - bluez-firmware: Bluetooth firmware (dongles, adapters)
+#   - firmware-atheros: Qualcomm Atheros WiFi (common in laptops)
+#   - firmware-intel-graphics: Intel GPU firmware (integrated graphics)
+#   - firmware-iwlwifi: Intel WiFi firmware (most Intel laptops)
+#   - firmware-mediatek: MediaTek WiFi/Bluetooth (newer laptops)
+#   - firmware-intel-misc: Miscellaneous Intel firmware
+#   - firmware-intel-sound: Intel audio firmware (SST/DSP)
+#
+# Why So Much Firmware?
+#   - Modern hardware requires firmware blobs
+#   - Manufacturers don't open-source their firmware
+#   - Without firmware: WiFi doesn't work, GPU doesn't work, etc.
+#   - Better to install everything than debug "WiFi not found"
+#
+# Microcode Updates:
+#   - CPU bugs are fixed in microcode (software patches for hardware)
+#   - Critical for security (Spectre, Meltdown, etc.)
+#   - Loaded at boot by kernel
+#   - Intel and AMD both provide updates
 
 log_info "Installing kernel and firmware..."
 apt install -y \
@@ -2687,10 +3134,30 @@ apt install -y \
     bluez-firmware \
     firmware-atheros \
     firmware-intel-graphics \
-    firmware-iwlwifi
+    firmware-iwlwifi \
     firmware-mediatek \
     firmware-intel-misc \
     firmware-intel-sound
+
+#==============================================================================
+# CRYPTSETUP AND FILESYSTEM TOOLS
+#==============================================================================
+#
+# These packages are necessary to interact with the encrypted partitions and the filesystems.
+# If you use different filesystems, ensure they are installed here but this set should serve you fine.
+#
+# Package Breakdown:
+#   - cryptsetup: LUKS encryption management (already installed, but ensure latest)
+#   - cryptsetup-initramfs: Hooks for unlocking at boot (CRITICAL)
+#   - btrfs-progs: BTRFS filesystem utilities (subvolumes, snapshots)
+#   - dosfstools: FAT32 tools (EFI partition management)
+#   - e2fsprogs: ext4 tools (boot partition management)
+#
+# Why cryptsetup-initramfs?
+#   - Adds cryptsetup to initramfs (early boot environment)
+#   - Without this: System can't unlock encrypted root
+#   - initramfs is the pre-init ramdisk (runs before real root mounts)
+#   - Contains minimal tools needed to mount root filesystem
 
 log_info "Installing cryptsetup and filesystem tools..."
 apt install -y \
@@ -2698,7 +3165,28 @@ apt install -y \
     cryptsetup-initramfs \
     btrfs-progs \
     dosfstools \
-    e2fsprogs 
+    e2fsprogs
+
+#==============================================================================
+# BOOTLOADER
+#==============================================================================
+#
+# To be able to start the system.
+#
+# Package Breakdown:
+#   - grub-efi-amd64: GRUB bootloader for UEFI systems (64-bit)
+#   - grub-efi-amd64-bin: GRUB binaries (actual bootloader code)
+#   - efibootmgr: Manage UEFI boot entries (adds GRUB to firmware)
+#
+# Why UEFI?
+#   - Modern systems use UEFI (not legacy BIOS)
+#   - UEFI boots from ESP (EFI System Partition)
+#   - GRUB is installed to ESP, firmware boots GRUB
+#
+# Why Three Packages?
+#   - grub-efi-amd64: Metapackage (pulls in dependencies)
+#   - grub-efi-amd64-bin: Core binaries (bootloader itself)
+#   - efibootmgr: Firmware configuration (tells UEFI about GRUB)
 
 log_info "Installing bootloader..."
 apt install -y \
@@ -2706,13 +3194,52 @@ apt install -y \
     grub-efi-amd64-bin \
     efibootmgr
 
+#==============================================================================
+# ESSENTIAL SYSTEM UTILITIES
+#==============================================================================
+#
+# Someone will point out that I do not have vim and that goes without saying.
+# Vim is showing its age and requires an obsession with your tooling and the plugin system that I do not have.
+# If I have to contemplate a plugin manager to make it usable in a modern context, then maybe it is time for something new.
+# Neovim breaking its own plugin system is upsetting.
+# If I am going to use a modal editor, my preference is helix, after you do something about that ugly default color scheme.
+# I may in the future add helix and a config step to the chroot script.
+# But I use nano, heredoc, and cat just fine.
+# We also do not talk about emacs here.
+#
+# On tmux, byobu, and tmuxinator:
+#   - This makes tmux work for us mere mortals
+#   - The shortcut key on byobu is worth its weight in gold
+#   - I include screen as an option
+#   - We often sweat attack surface on the small stuff
+#   - And then run a modern web browser or systemd distro without a trace of irony
+#
+# Visual Command Line Tools:
+#   - htop: Better top (process viewer with colors, mouse support)
+#   - lnav: Log navigator (colorized log viewer, automatic format detection)
+#   - ncdu: NCurses disk usage (visual du, interactive navigation)
+#   - tree: Recursive directory listing (visual hierarchy)
+#
+# Package Management:
+#   - aptitude: Semantic package tagging system and superior search functions
+#   - apt-rdepends: Building package tooling that "should have been included in apt" according to the manpage
+#
+# Essential Tools:
+#   - sudo: Unless you want to spend all your time tap dancing between accounts, and so you can lock root
+#   - mandb and manpages: Because RTFM is absolutely the right answer. Even if the fucking manual sucks, at least you have an idea of where to start your questions.
+#   - less: Because once you realize more only goes one direction, you would be installing it yourself anyway
+#   - rsync: The correct way to copy files (progress, resume, compression)
+#   - dbus: Inter-process communication (required for modern desktop)
+
 log_info "Installing essential system utilities..."
 apt install -y \
-    vim \
     tmux \
+    byobu \
+    tmuxinator \
     htop \
     ncdu \
     aptitude \
+    apt-rdepends \
     lnav \
     tree \
     rsync \
@@ -2721,8 +3248,34 @@ apt install -y \
     man-db \
     manpages \
     sudo \
-    dbus \
-    
+    dbus
+
+#==============================================================================
+# SHELL AND DEVELOPMENT TOOLS
+#==============================================================================
+#
+# I use zsh.
+# A good portion of this work is devoted to placing my modular zsh config in /etc/skel.
+# The two plugins are good ideas as well.
+#
+# Package Breakdown:
+#   - zsh: Z shell (our login shell, better than bash)
+#   - zsh-syntax-highlighting: Syntax highlighting in interactive zsh (red = invalid, green = valid)
+#   - zsh-autosuggestions: Fish-style autosuggestions (gray text based on history)
+#
+# Development Tools:
+#   - git: Version control (essential for modern development)
+#   - curl: HTTP client (download files, API calls)
+#   - wget: HTTP downloader (alternative to curl, better for recursive downloads)
+#   - build-essential: GCC, make, libc-dev (compile C/C++ programs)
+#   - pkg-config: Build system helper (finds libraries)
+#
+# Why build-essential?
+#   - If you're this deep into this script, you're the type that needs build-essential
+#   - Compiling from source is inevitable
+#   - Many installers assume you have a C compiler
+#   - DKMS requires it (kernel module building)
+
 log_info "Installing shell and development tools..."
 apt install -y \
     zsh \
@@ -2733,6 +3286,34 @@ apt install -y \
     wget \
     build-essential \
     pkg-config
+
+#==============================================================================
+# NETWORK STACK
+#==============================================================================
+#
+# This is all needed to get on the network, especially wireless networks like most of us do now.
+#
+# Package Breakdown:
+#   - network-manager: High-level network configuration (GUI + CLI)
+#   - wireless-tools: Legacy wireless tools (iwconfig, etc.)
+#   - wpasupplicant: WPA/WPA2 authentication (WiFi security)
+#   - iw: Modern wireless configuration (nl80211 interface)
+#   - rfkill: Radio kill switches (enable/disable WiFi/Bluetooth)
+#   - net-tools: Legacy network tools (ifconfig, netstat)
+#   - dnsutils: DNS tools (dig, nslookup, host)
+#   - iputils-ping: Ping utility (network connectivity testing)
+#   - iproute2: Modern network tools (ip command, replaces ifconfig)
+#   - ethtool: Ethernet adapter configuration (speeds, duplex, wake-on-LAN)
+#
+# Why Both Legacy and Modern Tools?
+#   - Legacy: Scripts expect ifconfig/netstat
+#   - Modern: ip command is more powerful
+#   - Both: Maximum compatibility
+#
+# NetworkManager:
+#   - Manages all network connections (Ethernet, WiFi, VPN)
+#   - Provides nmcli (CLI) and nmtui (TUI)
+#   - Works without systemd (uses elogind/ConsoleKit)
 
 log_info "Installing network stack..."
 apt install -y \
@@ -2747,6 +3328,37 @@ apt install -y \
     iproute2 \
     ethtool
 
+#==============================================================================
+# SYSTEM SERVICES
+#==============================================================================
+#
+# System services for SysVinit, because you can't depend on systemd pulling in hundreds of packages
+# or any of the other functions it has built in, on non-systemd distros.
+#
+# Package Breakdown:
+#   - elogind: Session management (replaces systemd-logind)
+#   - libpam-elogind: PAM module for elogind (login sessions)
+#   - dbus-x11: D-Bus session bus for X11 (desktop communication)
+#   - acpid: ACPI daemon (power button, lid close, battery events)
+#   - chrony: NTP client (time synchronization, better than ntp)
+#   - libvirt-daemon-system: Virtualization daemon (KVM/QEMU management)
+#   - libvirt-clients: Virtualization clients (virsh, virt-manager)
+#   - qemu-kvm: QEMU with KVM acceleration (fast VMs)
+#   - bluez: Bluetooth stack (userspace components)
+#   - bluez-tools: Bluetooth utilities (CLI management)
+#
+# Why elogind?
+#   - Systemd-logind is not available (we don't use systemd)
+#   - elogind is a standalone fork (same API, no systemd)
+#   - Required for modern desktop environments
+#   - Handles seat management, multi-user sessions
+#
+# Why chrony over ntp?
+#   - Faster synchronization (minutes vs hours)
+#   - Better for laptops (suspends gracefully)
+#   - More accurate (handles network jitter better)
+#   - Simpler configuration
+
 log_info "Installing system services..."
 apt install -y \
     elogind \
@@ -2754,11 +3366,38 @@ apt install -y \
     dbus-x11 \
     acpid \
     chrony \
-	libvirt-daemon-system \
+    libvirt-daemon-system \
     libvirt-clients \
     qemu-kvm \
     bluez \
     bluez-tools
+
+#==============================================================================
+# HARDWARE SUPPORT
+#==============================================================================
+#
+# These are some handy tools when you need to troubleshoot hardware or want nerdy statistics on something.
+# Dig deep to find some interesting options.
+#
+# Package Breakdown:
+#   - pciutils: PCI device utilities (lspci - list PCI devices)
+#   - usbutils: USB device utilities (lsusb - list USB devices)
+#   - lshw: List hardware (detailed hardware information)
+#   - smartmontools: SMART monitoring (disk health, temperature, errors)
+#   - hdparm: Hard disk parameters (ATA commands, performance tuning)
+#   - nvme-cli: NVMe management (NVMe-specific commands, health info)
+#
+# Why These Tools?
+#   - lspci/lsusb: Identify hardware (what's connected?)
+#   - lshw: Detailed specs (RAM speed, CPU cache, etc.)
+#   - smartmontools: Predict disk failures (reallocated sectors, temperature)
+#   - hdparm: Test disk speed, configure power management
+#   - nvme-cli: NVMe health (wear leveling, endurance)
+#
+# Example Usage:
+#   - lspci | grep VGA (what GPU do I have?)
+#   - smartctl -a /dev/sda (is my disk dying?)
+#   - nvme smart-log /dev/nvme0n1 (NVMe health check)
 
 log_info "Installing hardware support..."
 apt install -y \
@@ -2767,53 +3406,161 @@ apt install -y \
     lshw \
     smartmontools \
     hdparm \
-	nvme-cli
+    nvme-cli
+
+#==============================================================================
+# DESKTOP ENVIRONMENT (XFCE4)
+#==============================================================================
+#
+# We install a minimal but functional desktop.
+#   - task-xfce-desktop: The core environment
+#   - lightdm: The login manager
+#   - arc-theme/papirus: Dark mode essentials
+#   - This section will see the most reworking in future versions
+#   - I plan to focus some of my early modularization plans here
+#
+# Package Breakdown:
+#   - task-xfce-desktop: XFCE metapackage (pulls in core desktop)
+#   - xfce4-goodies: Extra XFCE plugins (sensors, weather, etc.)
+#   - lightdm: Display manager (login screen)
+#   - network-manager-gnome: NetworkManager GUI (WiFi/VPN management)
+#   - pulseaudio: Sound server (audio routing, mixing)
+#   - pavucontrol: PulseAudio volume control (GUI mixer)
+#   - firefox-esr: Web browser (Extended Support Release, stable)
+#
+# Theme Assets:
+#   - arc-theme: GTK theme (Arc-Dark variant for dark mode)
+#   - papirus-icon-theme: Icon theme (Papirus-Dark for dark mode)
+#
+# Why XFCE?
+#   - Lightweight (500MB RAM idle)
+#   - Stable (no Wayland drama, no GNOME breakage)
+#   - Customizable (GTK3, traditional menus)
+#   - SysVinit-friendly (no hard systemd dependencies)
+#
+# Why LightDM?
+#   - Lightweight display manager (not GDM's 200MB monster)
+#   - GTK greeter (themeable, consistent with XFCE)
+#   - Works without systemd (elogind support)
 
 log_info "Installing Desktop Environment (XFCE4)..."
-# We install a minimal but functional desktop.
-# - task-xfce-desktop: The core environment
-# - lightdm: The login manager
-# - arc-theme/papirus: Dark mode essentials
 apt install -y \
     task-xfce-desktop \
     xfce4-goodies \
     lightdm \
     network-manager-gnome \
-    pulseaudio pavucontrol \
+    pulseaudio \
+    pavucontrol \
     firefox-esr
-
 
 # Theme Assets
 apt install -y \
     arc-theme \
-    papirus-icon-theme 
+    papirus-icon-theme
 
-# Tools needed for the NEXT iteration of the Quine
+#==============================================================================
+# QUINE TOOLS (System Replication)
+#==============================================================================
+#
+# There were repeats here but anything installed earlier in this script has been removed.
+# Tools needed for the NEXT iteration of the Quine.
+#
+# Package Breakdown:
+#   - arch-install-scripts: arch-chroot and other helpers (better than plain chroot)
+#   - debootstrap: Bootstrap Debian/Devuan systems (create base system)
+#   - parted: Partition management (GPT/MBR manipulation)
+#   - gdisk: GPT-specific partitioning (sgdisk command)
+#   - refractasnapshot-gui: Create bootable live ISOs (GUI)
+#   - refractainstaller-gui: Install from live ISO (GUI)
+#   - refractasnapshot-base: Snapshot backend (CLI)
+#   - refractainstaller-base: Installer backend (CLI)
+#
+# Why Refracta?
+#   - System becomes self-replicating (install once, clone forever)
+#   - Live USB for system recovery (boot from ISO, mount encrypted drives)
+#   - Deployment tool (create custom Devuan respins)
+#   - The Quine connection: Bootstrap script copies itself to /etc/skel/
+#   - New users get the script, create ISOs, boot ISOs, run script again
+#   - Infinite reproducibility
+
 apt install -y \
     arch-install-scripts \
     debootstrap \
-    cryptsetup \
     parted \
     gdisk \
-    btrfs-progs \
-    wget
+    refractasnapshot-gui \
+    refractainstaller-gui \
+    refractasnapshot-base \
+    refractainstaller-base
 
-
-log_info "Installing Nvidia Drivers (Proprietary)..."
+#==============================================================================
+# NVIDIA DRIVERS (PROPRIETARY)
+#==============================================================================
+#
 # This pulls the kernel modules and the settings panel.
 # We handled the 'nouveau' blacklist in the config phase.
 # We allow this to "fail" because the postinst script is known to be buggy
 # and we have a fix ready in the next step.
+#
+# Package Breakdown:
+#   - nvidia-driver: Proprietary Nvidia driver (kernel module + userspace)
+#   - firmware-misc-nonfree: Nvidia firmware (GPU microcode)
+#   - nvidia-smi: Nvidia System Management Interface (GPU monitoring)
+#   - nvidia-settings: Nvidia control panel (GUI configuration)
+#
+# Why || true?
+#   - nvidia-persistenced.postinst script is broken
+#   - It fails even when driver installs correctly
+#   - Without || true, script would abort here
+#   - We fix it in next section (stub out postinst)
+#
+# The Nvidia Problem:
+#   - Proprietary driver conflicts with nouveau (open source)
+#   - Postinst scripts are fragile (race conditions, missing dependencies)
+#   - Driver works fine, but dpkg thinks it failed
+#   - We work around this (see next section)
+
+log_info "Installing Nvidia Drivers (Proprietary)..."
 apt install -y \
     nvidia-driver \
     firmware-misc-nonfree \
     nvidia-smi \
     nvidia-settings || true
 
+#==============================================================================
+# POST-INSTALL CONFIGURATION FIXES
+#==============================================================================
+#
+# This section contains workarounds for known packaging bugs.
+# Ideally, we wouldn't need this. But reality is messy.
+
 log_info "Applying post-install configuration fixes..."
 
-# 1. Nvidia Persistence Hack & DPKG Repair
-# We force the postinst to pass and then reconfigure everything to clear locks.
+# ──────────────────────────────────────────────────────────────────────────
+# 1. NVIDIA PERSISTENCE HACK & DPKG REPAIR
+# ──────────────────────────────────────────────────────────────────────────
+#
+# The Problem:
+#   - nvidia-persistenced.postinst script fails
+#   - dpkg marks package as "half-configured"
+#   - This blocks future package operations
+#
+# The Solution:
+#   - Replace postinst with stub (always succeeds)
+#   - Run dpkg --configure -a (reconfigure all packages)
+#   - DPKG clears the lock, marks package as configured
+#
+# Why This Works:
+#   - nvidia-persistenced is not critical for desktop use
+#   - It's only needed for headless GPU compute (CUDA servers)
+#   - Stubbing postinst allows dpkg to proceed
+#   - Real nvidia drivers still load correctly at boot
+#
+# Risk:
+#   - If you need nvidia-persistenced for CUDA, this breaks it
+#   - You'll need to reconfigure manually after install
+#   - For desktop use (99% of cases), this is fine
+
 mkdir -p /var/lib/dpkg/info
 echo "#!/bin/sh" > /var/lib/dpkg/info/nvidia-persistenced.postinst
 echo "exit 0" >> /var/lib/dpkg/info/nvidia-persistenced.postinst
@@ -2822,10 +3569,35 @@ chmod +x /var/lib/dpkg/info/nvidia-persistenced.postinst
 log_info "Ensuring package database is consistent..."
 dpkg --configure -a || log_warning "dpkg configure returned an error, but proceeding..."
 
+# ──────────────────────────────────────────────────────────────────────────
 # 2. GUI PRE-CONFIGURATION (Dark Mode Default)
+# ──────────────────────────────────────────────────────────────────────────
+#
 # Purpose: Force Arc-Dark/Papirus now that packages are actually installed.
-
+#
+# Why Now?
+#   - LightDM and XFCE configs didn't exist during bootstrap
+#   - We had to wait until packages were installed
+#   - Now we can write to their config files
+#
 # A. Force LightDM (Login Screen) to Dark Mode
+#
+# LightDM Configuration: /etc/lightdm/lightdm-gtk-greeter.conf
+#   - theme-name: GTK theme for login screen
+#   - icon-theme-name: Icon theme for login screen  
+#   - background: Background color (hex)
+#
+# Why sed Instead of cat?
+#   - Config file already exists (installed by package)
+#   - We want to modify specific lines, not replace file
+#   - sed -i: In-place editing (modifies file directly)
+#   - s/old/new/: Substitute pattern
+#   - ^#\?: Match line with or without leading #
+#
+# Fallback:
+#   - If config doesn't exist, log warning
+#   - User can configure manually after install
+
 GREETER_CONF="/etc/lightdm/lightdm-gtk-greeter.conf"
 if [ -f "$GREETER_CONF" ]; then
     sed -i 's/^#\?theme-name=.*/theme-name=Arc-Dark/' "$GREETER_CONF"
@@ -2835,7 +3607,30 @@ else
     log_warning "LightDM config not found at $GREETER_CONF. Skipping Greeter theme."
 fi
 
-# B. Force XFCE (Desktop) to Dark Mode for all new users
+# ──────────────────────────────────────────────────────────────────────────
+# B. Force XFCE (Desktop) to Dark Mode for All New Users
+# ──────────────────────────────────────────────────────────────────────────
+#
+# XFCE Configuration: /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
+#   - System-wide defaults for XFCE
+#   - Copied to user's ~/.config/xfce4/ on first login
+#   - XML format (xfconf database)
+#
+# Why XML?
+#   - XFCE uses xfconf (configuration storage system)
+#   - Similar to Windows Registry or GSettings
+#   - XML files are the storage backend
+#   - Can also edit with xfconf-query command
+#
+# Configuration Files:
+#   - xsettings.xml: GTK theme, icon theme, fonts
+#   - xfwm4.xml: Window manager theme, keybindings
+#
+# Why Two Files?
+#   - xsettings: Application appearance (GTK apps)
+#   - xfwm4: Window decorations (title bars, borders)
+#   - Separate concerns (X11 tradition)
+
 XFCE_XML_DIR="/etc/xdg/xfce4/xfconf/xfce-perchannel-xml"
 mkdir -p "$XFCE_XML_DIR"
 
@@ -2860,13 +3655,40 @@ cat <<EOF > "$XFCE_XML_DIR/xfwm4.xml"
 </channel>
 EOF
 
-
-
 log_success "Post-install configuration complete (Nvidia hacked, Dpkg cleared, Dark Mode enforced)."
 
 #==============================================================================
 # SYSCTL TWEAKS
 #==============================================================================
+#
+# You can make arguments here about security but as a single user with my use case
+# adding sudo and blocking these off is a speedbump, not an actual defense.
+# If somebody is so close to my system, they can use these against me, I am already fucked.
+# Privilege separation will do nothing to save me there.
+#
+# Kernel Parameters:
+#   - kernel.dmesg_restrict: Allow unprivileged users to read kernel log
+#   - net.ipv4.ip_unprivileged_port_start: Allow users to bind ports 0-1023
+#
+# Why Disable dmesg_restrict?
+#   - Default: Only root can read dmesg (kernel log)
+#   - Reasoning: Kernel log may contain sensitive info
+#   - Reality: Most info in dmesg is public (hardware, drivers)
+#   - Useful for debugging (users can see hardware errors)
+#   - If attacker has local access, they have bigger problems
+#
+# Why Allow Unprivileged Ports?
+#   - Default: Only root can bind ports < 1024 (privileged ports)
+#   - Legacy from multi-user systems (prevent port hijacking)
+#   - Modern: CAP_NET_BIND_SERVICE capability (better security)
+#   - Single-user laptop: Privilege separation is theater
+#   - Allows running dev servers without sudo (convenience)
+#
+# Security Note:
+#   - These are CONVENIENCE tweaks, not security improvements
+#   - If you're running a multi-user server, DO NOT apply these
+#   - For single-user laptop: Acceptable risk (usability > paranoia)
+
 echo ">>> Appending Kernel Overrides to main sysctl.conf..."
 
 cat <<EOF >> /etc/sysctl.conf
@@ -2883,10 +3705,75 @@ EOF
 #==============================================================================
 # INITRAMFS CONFIGURATION
 #==============================================================================
+#
+# What is initramfs?
+#   - Initial RAM filesystem (early boot environment)
+#   - Loaded by bootloader before real root filesystem
+#   - Contains minimal tools needed to mount root
+#   - Runs init scripts (cryptsetup, LVM, RAID)
+#
+# Our Requirements:
+#   1. Unlock LUKS volumes (using USB keyfile)
+#   2. Mount BTRFS root (with correct subvolume)
+#   3. Pivot to real root and continue boot
+#
+# Why Configure This?
+#   - Default initramfs doesn't include USB drivers
+#   - Default initramfs doesn't know about our keyfile
+#   - We must explicitly tell it what to include
+#
+# Configuration Files:
+#   - /etc/cryptsetup-initramfs/conf-hook: Cryptsetup configuration
+#   - /etc/initramfs-tools/modules: Kernel modules to include
+#   - /etc/initramfs-tools/conf.d/resume: Swap/resume configuration
+#
+# Critical Modules:
+#   - usb_storage: USB mass storage (USB drives)
+#   - uas: USB Attached SCSI (faster USB 3.0 protocol)
+#   - sd_mod: SCSI disk (USB drives appear as SCSI)
+#   - ext4: Filesystem for USB keyfile (must read keyfile)
+#   - nls_utf8/nls_cp437: Filename encoding (FAT32 compatibility)
+#   - crc32: Checksum (required by ext4)
+#
+# Why These Modules?
+#   - USB drivers: Can't read keyfile without USB support
+#   - Filesystem drivers: Can't mount USB without ext4 support
+#   - Encoding: Can't read filenames without NLS support
+#
+# Boot Process with initramfs:
+#   1. GRUB loads kernel + initramfs
+#   2. Kernel unpacks initramfs to RAM
+#   3. Kernel runs /init script in initramfs
+#   4. Init script loads USB modules (usb_storage, uas)
+#   5. Init script waits for USB device (rootdelay=10)
+#   6. Init script mounts USB keyfile (ext4 filesystem)
+#   7. Init script reads keyfile (/keyfile)
+#   8. Init script unlocks LUKS volumes (cryptsetup)
+#   9. Init script mounts BTRFS root (subvol=@)
+#   10. Init script pivot_root to real root
+#   11. Real init (SysVinit) takes over
 
 log_info "Configuring cryptsetup for initramfs..."
 
-# Ensure cryptsetup hooks are enabled
+# ──────────────────────────────────────────────────────────────────────────
+# Cryptsetup Hook Configuration
+# ──────────────────────────────────────────────────────────────────────────
+#
+# CRYPTSETUP=y:
+#   - Include cryptsetup in initramfs (required for LUKS)
+#   - Without this: Can't unlock encrypted volumes
+#
+# KEYFILE_PATTERN:
+#   - Pattern to match keyfile device
+#   - /dev/disk/by-partlabel/${PARTLABEL_USB}:${USB_KEYFILE_PATH}
+#   - Format: DEVICE:PATH
+#   - Example: /dev/disk/by-partlabel/bootkey:/keyfile
+#
+# Why Pattern Instead of Exact Path?
+#   - Device name may change (/dev/sdb vs /dev/sdc)
+#   - Partition label is stable (stays same across boots)
+#   - initramfs uses this to find keyfile automatically
+
 mkdir -p /etc/cryptsetup-initramfs
 cat > /etc/cryptsetup-initramfs/conf-hook <<EOF
 # Cryptsetup initramfs hook configuration
@@ -2894,7 +3781,30 @@ CRYPTSETUP=y
 KEYFILE_PATTERN="/dev/disk/by-partlabel/${PARTLABEL_USB}:${USB_KEYFILE_PATH}"
 EOF
 
-# Configure initramfs to include USB drivers early
+# ──────────────────────────────────────────────────────────────────────────
+# Add USB Modules to initramfs
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Why These Modules Are CRITICAL:
+#   - Without USB modules: Can't detect USB keyfile
+#   - Without filesystem modules: Can't read keyfile
+#   - Without encoding modules: Can't read filenames
+#   - Result: Boot fails (can't unlock root)
+#
+# Module Loading Order:
+#   1. USB host controller (built into kernel)
+#   2. usb_storage (USB mass storage driver)
+#   3. uas (USB Attached SCSI, optional but faster)
+#   4. sd_mod (SCSI disk driver)
+#   5. ext4 (filesystem driver)
+#   6. nls_* (filename encoding)
+#   7. crc32 (checksum for ext4)
+#
+# Debugging:
+#   - If boot fails "waiting for encrypted source device"
+#   - Check: lsinitramfs /boot/initrd.img-* | grep usb-storage
+#   - Should see: kernel/drivers/usb/storage/usb-storage.ko
+
 log_info "Adding USB modules to initramfs..."
 cat >> /etc/initramfs-tools/modules <<EOF
 
@@ -2909,16 +3819,96 @@ nls_cp437
 crc32
 EOF
 
-# Ensure resume is disabled (no swap)
+# ──────────────────────────────────────────────────────────────────────────
+# Disable Resume (No Swap)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# What is Resume?
+#   - Hibernate support (suspend-to-disk)
+#   - Kernel writes RAM to swap, powers off
+#   - On boot, kernel restores RAM from swap
+#
+# Why Disable?
+#   - We haven't configured swap yet (optional)
+#   - Resume without swap = boot delay (kernel waits for swap)
+#   - RESUME=none: Tell kernel not to look for swap
+#
+# If You Add Swap Later:
+#   - Change RESUME=none to RESUME=/dev/mapper/cryptroot
+#   - Add resume=/dev/mapper/cryptroot to GRUB_CMDLINE_LINUX
+#   - Rebuild initramfs: update-initramfs -u -k all
+
 log_info "Disabling resume in initramfs..."
 echo "RESUME=none" > /etc/initramfs-tools/conf.d/resume
+
+# ──────────────────────────────────────────────────────────────────────────
+# Rebuild initramfs for All Kernels
+# ──────────────────────────────────────────────────────────────────────────
+#
+# update-initramfs:
+#   - Regenerates initramfs with our new configuration
+#   - -c: Create (not update, we want fresh build)
+#   - -k all: All installed kernels (not just current)
+#
+# Why -k all?
+#   - We might have multiple kernels installed
+#   - Each kernel needs its own initramfs
+#   - Better to rebuild all than debug "wrong initramfs" later
+#
+# Output:
+#   - /boot/initrd.img-5.10.0-28-amd64
+#   - /boot/initrd.img-5.10.0-29-amd64
+#   - etc.
+#
+# Verification:
+#   - lsinitramfs /boot/initrd.img-* | grep cryptsetup
+#   - Should see: scripts/local-top/cryptroot
+#   - lsinitramfs /boot/initrd.img-* | grep usb-storage
+#   - Should see: kernel/drivers/usb/storage/usb-storage.ko
 
 log_info "Rebuilding initramfs for all kernels..."
 update-initramfs -c -k all
 
 #==============================================================================
-# BOOTLOADER
+# BOOTLOADER INSTALLATION
 #==============================================================================
+#
+# This is where we actually install GRUB to the EFI partition.
+# We configured GRUB earlier (/etc/default/grub).
+# Now we install it and generate the boot configuration.
+#
+# Two-Step Process:
+#   1. grub-install: Write bootloader to ESP
+#   2. grub-mkconfig: Generate grub.cfg from /etc/default/grub
+#
+# grub-install Parameters:
+#   --target=x86_64-efi: UEFI bootloader (64-bit)
+#   --efi-directory=/boot/efi: Where ESP is mounted
+#   --bootloader-id="GNU/Linux": Name in UEFI boot menu
+#   --recheck: Force partition table re-read
+#
+# What grub-install Does:
+#   1. Copies GRUB binaries to /boot/efi/EFI/GNU/
+#   2. Creates grubx64.efi (UEFI bootloader)
+#   3. Registers bootloader with UEFI firmware (efibootmgr)
+#   4. Sets boot order (GNU/Linux first)
+#
+# grub-mkconfig:
+#   - Scans /boot for kernels (vmlinuz-*)
+#   - Scans /boot for initramfs (initrd.img-*)
+#   - Reads /etc/default/grub (our configuration)
+#   - Generates /boot/grub/grub.cfg (boot menu)
+#
+# What's in grub.cfg?
+#   - Menu entries (one per kernel)
+#   - Kernel command line (from GRUB_CMDLINE_LINUX)
+#   - initramfs path (matched to kernel)
+#   - BTRFS subvolume (rootflags=subvol=@)
+#
+# Failure Modes:
+#   - grub-install fails: UEFI firmware may be locked (SecureBoot)
+#   - grub-mkconfig fails: Kernel or initramfs missing
+#   - If either fails: System won't boot (abort immediately)
 
 log_info "Installing GRUB to EFI..."
 grub-install \
@@ -2937,8 +3927,51 @@ grub-mkconfig -o /boot/grub/grub.cfg || {
 }
 
 #==============================================================================
-# INIT SYSTEM SERVICES
+# INIT SYSTEM SERVICES (SysVinit)
 #==============================================================================
+#
+# SysVinit Service Management:
+#   - update-rc.d: Configure init scripts
+#   - defaults: Enable service at default runlevels (2,3,4,5)
+#   - Services start at boot, stop at shutdown
+#
+# Why These Services?
+#   - Crypto: Unlock encrypted volumes at boot
+#   - Networking: Connect to networks
+#   - System: Basic system services (dbus, elogind, time)
+#
+# Service Breakdown:
+#
+# Crypto Services (CRITICAL):
+#   - cryptdisks: Unlock LUKS volumes from /etc/crypttab
+#   - cryptdisks-early: Unlock early (before filesystem checks)
+#   - Why both? Early for root, regular for others
+#
+# Networking:
+#   - networking: Basic network configuration (ifupdown)
+#   - network-manager: High-level network management (WiFi, VPN)
+#   - Why both? networking is fallback, NetworkManager is primary
+#
+# System Services:
+#   - dbus: Inter-process communication (required for desktop)
+#   - elogind: Session management (login, seats, power)
+#   - acpid: ACPI events (power button, lid close)
+#   - chrony: Time synchronization (NTP client)
+#   - cron: Scheduled tasks (periodic jobs)
+#   - libvirtd: Virtualization daemon (KVM/QEMU)
+#   - bluetooth: Bluetooth daemon (device pairing)
+#
+# Service Dependencies:
+#   - dbus must start before elogind (elogind needs dbus)
+#   - elogind must start before desktop (session management)
+#   - cryptdisks-early must start before filesystem checks
+#
+# Runlevels (SysVinit):
+#   - 0: Halt (shutdown)
+#   - 1: Single-user mode (rescue)
+#   - 2,3,4,5: Multi-user mode (normal boot)
+#   - 6: Reboot
+#   - defaults: Enable in 2,3,4,5
 
 log_info "Configuring SysVinit services..."
 
@@ -2964,6 +3997,32 @@ log_success "Services configured"
 #==============================================================================
 # SUDO CONFIGURATION
 #==============================================================================
+#
+# Sudo Configuration:
+#   - /etc/sudoers: Main sudo configuration
+#   - Syntax: %group ALL=(ALL:ALL) ALL
+#
+# Format Explanation:
+#   - %sudo: Group name (% prefix means group)
+#   - ALL=(ALL:ALL): Any host, any user, any group
+#   - ALL: Any command
+#   - Result: sudo group members can run any command as any user
+#
+# Why Check First?
+#   - Some distros already have %sudo configured
+#   - grep -q: Quiet grep (return exit code only)
+#   - ^%sudo: Line starting with %sudo
+#   - If not found: Add it
+#
+# Security Note:
+#   - This gives sudo group unlimited power
+#   - Alternative: NOPASSWD (no password required, less secure)
+#   - We require password (balance security/convenience)
+#
+# User Addition:
+#   - Users must be added to sudo group manually
+#   - usermod -aG sudo username
+#   - Or during user creation (we do this later)
 
 log_info "Configuring sudo..."
 
@@ -2973,21 +4032,105 @@ if ! grep -q "^%sudo" /etc/sudoers; then
 fi
 
 #==============================================================================
-# SKELETON DIRECTORY SETUP (/etc/skel) - XDG & ZSH Logic
+# SKELETON DIRECTORY SETUP (/etc/skel) - XDG & ZSH LOGIC
 #==============================================================================
+#
+# What is /etc/skel/?
+#   - Template directory for new user accounts
+#   - useradd -m copies /etc/skel/ to $HOME
+#   - Provides default configuration for all new users
+#
+# Our Strategy:
+#   1. Create XDG directory structure (Config/, Data/, State/, Cache/)
+#   2. Create modular zsh configuration (~/Config/zsh/)
+#   3. Create bin directories (~/bin/bootstrap/, ~/bin/utilities/)
+#   4. Create user directories (Documents/, Downloads/, etc.)
+#
+# Why This Matters:
+#   - New users get consistent environment from day one
+#   - No need to manually configure each account
+#   - XDG compliance enforced at user creation
+#   - Modular zsh config ready to use
+#
+# Directory Structure:
+#   /etc/skel/
+#   ├── Config/
+#   │   ├── zsh/              # Zsh configuration
+#   │   │   ├── .zshrc        # Main config
+#   │   │   ├── env/          # Environment variables
+#   │   │   ├── aliases/      # Command aliases
+#   │   │   ├── functions/    # Shell functions
+#   │   │   ├── plugins/      # Third-party plugins
+#   │   │   ├── completions/  # Custom completions
+#   │   │   └── local/        # Machine-specific overrides
+#   │   └── user-dirs.dirs    # XDG user directories
+#   ├── Data/                 # Application data
+#   ├── State/                # Logs, history
+#   ├── Cache/                # Temporary cache
+#   │   └── zsh/              # Zsh cache (zcompdump)
+#   └── bin/                  # User scripts
+#       ├── bootstrap/        # System install scripts
+#       ├── utilities/        # General utilities
+#       └── personal/         # User's personal scripts
+#
+# XDG User Directories:
+#   - Desktop/: Desktop files (shown on desktop)
+#   - Downloads/: Downloaded files
+#   - Documents/: Documents (organized by category)
+#   - Pictures/: Images (organized by type)
+#   - Videos/: Videos (organized by type)
+#   - Music/: Music files
+#   - Public/: Shared files
+#   - Templates/: Document templates
+#   - Library/: Books, research (custom, not XDG standard)
 
 log_info "Configuring /etc/skel XDG structure..."
 
 SKEL="/etc/skel"
 
+# ──────────────────────────────────────────────────────────────────────────
 # 1. Create Base Hierarchy (CAPITALIZED to match God Mode XDG vars)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Why Capitalized?
+#   - Visible in file managers (not hidden)
+#   - Sorts to top in ls output
+#   - Matches our XDG environment variables
+#   - Clear distinction from system directories
+
 mkdir -p "$SKEL/Config/zsh/"{env,aliases,functions,plugins,completions,local}
 mkdir -p "$SKEL/Data"
 mkdir -p "$SKEL/State"
 mkdir -p "$SKEL/Cache/zsh"
 mkdir -p "$SKEL/bin/"{bootstrap,utilities,personal}
 
+# ──────────────────────────────────────────────────────────────────────────
 # 2. XDG User Directories
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Organized Directory Structure:
+#   - Downloads/: Subfolders for organization (Quarantine, Sort, Move)
+#   - Videos/: Categorized by content type
+#   - Documents/: Separated by purpose (Personal, Business, Bills)
+#   - Library/: Books and research materials
+#   - Templates/: File templates for common document types
+#   - Pictures/: Organized by category
+#
+# Why These Subdivisions?
+#   - Downloads/Quarantine: Files from untrusted sources
+#   - Downloads/Sort: Files needing organization
+#   - Downloads/Move: Files ready to move elsewhere
+#   - Videos/Anime, Movies, TV, Porn: Self-explanatory categories
+#   - Documents/Personal, Business, Bills: Logical separation
+#   - Library/Fiction, Research, etc.: Book organization
+#   - Templates/: Common file types for quick access
+#   - Pictures/: Categorical organization
+#
+# Note:
+#   - These are suggestions, users can reorganize
+#   - Better than dumping everything in ~/Downloads
+#   - Provides starting point for organization
+
 mkdir -p "$SKEL/Desktop" "$SKEL/Public" "$SKEL/Music"
 mkdir -p "$SKEL/Downloads/"{Quarantine,Sort,Move}
 mkdir -p "$SKEL/Videos/"{Anime,Movies,TV,Porn}
@@ -2996,7 +4139,26 @@ mkdir -p "$SKEL/Library/"{Fiction,Research,Non-Fiction,Manga,Comics,Hentai}
 mkdir -p "$SKEL/Templates/"{Documents,Spreadsheets,Presentations,Scripts,Code}
 mkdir -p "$SKEL/Pictures/"{Memes,Work,Personal,Spicy}
 
+# ──────────────────────────────────────────────────────────────────────────
 # 3. Write user-dirs.dirs
+# ──────────────────────────────────────────────────────────────────────────
+#
+# What is user-dirs.dirs?
+#   - Configuration for xdg-user-dirs
+#   - Tells file managers where special folders are
+#   - Used by GTK file chooser, XFCE, GNOME, KDE
+#
+# Format:
+#   - XDG_DESKTOP_DIR="$HOME/Desktop"
+#   - Environment variable style
+#   - $HOME expands to user's home directory
+#
+# Why Configure This?
+#   - File managers look for these directories
+#   - "Save File" dialog opens in correct folder
+#   - Desktop environment knows where Desktop is
+#   - Consistent across all applications
+
 cat > "$SKEL/Config/user-dirs.dirs" << 'EOF'
 XDG_DESKTOP_DIR="$HOME/Desktop"
 XDG_DOWNLOAD_DIR="$HOME/Downloads"
@@ -3008,17 +4170,68 @@ XDG_PICTURES_DIR="$HOME/Pictures"
 XDG_VIDEOS_DIR="$HOME/Videos"
 EOF
 
+# ──────────────────────────────────────────────────────────────────────────
 # 4. The Master .zshrc
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Design Philosophy:
+#   - Distro-agnostic (works on any Linux with zsh)
+#   - XDG-compliant (all config in $XDG_CONFIG_HOME)
+#   - Modular loading (each feature in separate file)
+#   - Graceful degradation (missing plugins don't break shell)
+#
+# Loading Order:
+#   1. XDG Base Directories (ensure they exist)
+#   2. Shell Options (autocd, history, etc.)
+#   3. History Configuration (location, size, behavior)
+#   4. Keybindings (Emacs-style)
+#   5. Completion System (with caching)
+#   6. Colors (dircolors)
+#   7. Prompt (simple default, can be overridden by Starship)
+#   8. Terminal Title (window title shows current directory)
+#   9. Plugins (syntax highlighting, autosuggestions)
+#   10. Modular Loading (env/, aliases/, functions/, etc.)
+#
+# Why This Structure?
+#   - Each section has one job (single responsibility)
+#   - Easy to debug (comment out sections)
+#   - Easy to customize (add files to env/, aliases/, etc.)
+#   - Portable (copy to new system, works immediately)
+#
+# Modular Loading:
+#   - _load_zsh_dir function (loads all .zsh files in directory)
+#   - env/*.zsh: Environment variables (language tools, paths)
+#   - aliases/*.zsh: Command aliases (grouped by category)
+#   - functions/*.zsh: Shell functions (complex logic)
+#   - completions/*.zsh: Custom completions
+#   - plugins/*.zsh: Third-party plugins
+#   - local/*.zsh: Machine-specific overrides (gitignored)
+#
+# Plugin Detection:
+#   - _source_first_found function (try multiple paths)
+#   - System-wide paths (/usr/share/zsh/plugins/)
+#   - User paths ($ZSHCONFIG/plugins/)
+#   - Graceful fallback (if not found, continue)
+#
+# Completion Caching:
+#   - zcompdump stored in $XDG_CACHE_HOME/zsh/
+#   - Regenerated if > 24 hours old
+#   - Speeds up shell startup (don't rebuild every time)
+#
+# Cleanup:
+#   - Helper functions undefined after use
+#   - Keeps namespace clean (no pollution)
+
 cat > "$SKEL/Config/zsh/.zshrc" << 'MASTER_ZSHRC'
 # ~/.zshrc - Distro-agnostic ZSH configuration
 # Design principles: XDG compliance, Modular loading, Graceful degradation
 
 # --- XDG Base Directories ---
 # Inherit from zshenv, but set defaults just in case
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/Config}"
-export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/Data}"
-export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/State}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/Cache}"
+export XDG_CONFIG_HOME=$HOME/Config
+export XDG_DATA_HOME=$HOME/Data
+export XDG_STATE_HOME=$HOME/State
+export XDG_CACHE_HOME=$HOME/Cache
 
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" 2>/dev/null
 export ZDOTDIR="${XDG_CONFIG_HOME}/zsh"

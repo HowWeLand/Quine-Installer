@@ -11,3 +11,6 @@ Kali provides tools for security research but doesn't address the foundational p
 This script answers those questions. It's not Kali - it's the **reproducible, documented, secure research base** I wanted Kali to be.
 
 Sometimes you don't find the right tool. Sometimes you have to build it.
+
+
+*This documentation is licensed under [CC-BY-SA-4.0](https://creativecommons.org/licenses/by-sa/4.0/). You are free to remix, correct, and make it your own with attribution.*
